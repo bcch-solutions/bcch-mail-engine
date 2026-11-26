@@ -47,6 +47,13 @@ export const config = {
   // Esquema dedicado del motor (separación de datos en una BD compartida)
   dbSchema: str("DB_SCHEMA", "mail_engine"),
   dbSsl: bool("DB_SSL", true),
+  // Certificado CA raíz para validar TLS del Session Pooler de Cloud.
+  // El pooler presenta un cert firmado por una CA que no está en el trust
+  // store de Node 22 → sin esto, rejectUnauthorized:true falla con
+  // SELF_SIGNED_CERT_IN_CHAIN. Acepta PEM en línea (DB_SSL_CA) o ruta a
+  // archivo .pem/.crt (DB_SSL_CA_FILE).
+  dbSslCa: str("DB_SSL_CA", ""),
+  dbSslCaFile: str("DB_SSL_CA_FILE", ""),
 
   // Colas: postgres (SiteGround, sin Redis) o redis (VPS/Docker)
   queueProvider: str("QUEUE_PROVIDER", "postgres") as "postgres" | "redis",

@@ -5,13 +5,60 @@
 // para mantener separación estricta de datos y permisos.
 // ============================================================
 import pg from "pg";
+import fs from "node:fs";
 import { config } from "./config.js";
 import { log } from "./logger.js";
 
 export const DB_SCHEMA = config.dbSchema;
 
+// --- Configuración TLS centralizada ---
+// El Session Pooler de Cloud presenta un certificado firmado por una CA que
+// no está en el trust store de Node 22. Para mantener rejectUnauthorized:true
+// (validación estricta) inyectamos el CA raíz de Cloud vía DB_SSL_CA (PEM en
+// línea) o DB_SSL_CA_FILE (ruta a archivo .pem/.crt).
+function buildSslConfig(): pg.PoolConfig["ssl"] {
+  if (!config.dbSsl) return undefined;
+
+  // Recoger el CA: PEM en línea tiene prioridad; si no, leer archivo.
+  let ca: string | undefined;
+  if (config.dbSslCa) {
+    ca = config.dbSslCa;
+  } else if (config.dbSslCaFile) {
+    try {
+      ca = fs.readFileSync(config.dbSslCaFile, "utf8");
+      log.info({ file: config.dbSslCaFile }, "DB_SSL_CA_FILE cargado");
+    } catch (e: any) {
+      log.error({ err: e.message }, "No se pudo leer DB_SSL_CA_FILE");
+    }
+  }
+
+  if (ca) {
+    return { rejectUnauthorized: true, ca };
+  }
+  // Sin CA explícito: confiar en el trust store del sistema (Node 22).
+  return { rejectUnauthorized: true };
+}
+
+// Limpiar parámetros SSL conflictivos de la cadena de conexión.
+// sslmode=require (o verify-full) en DATABASE_URL hace que libpq/pg negocien
+// SSL por su cuenta, lo que puede chocar con la opción `ssl` explícita del
+// pool. Lo eliminamos para que la configuración centralizada aquí tenga prioridad.
+function cleanConnectionString(url: string): string {
+  if (!url) return url;
+  // Solo eliminar sslmode=... preservando el resto (esquema postgres://,
+  // credenciales, host, puerto, otros params). URL.origin no soporta
+  // esquemas no especiales como postgres://, así que operamos sobre la cadena.
+  // Caso ?sslmode=require (único param) → quita el "?" completo.
+  let out = url.replace(/\?sslmode=[^&]*$/, "");
+  // Caso ?sslmode=require&... → conserva "?" y el resto.
+  out = out.replace(/\?sslmode=[^&]*&/, "?");
+  // Caso &sslmode=require (param intermedio o final).
+  out = out.replace(/&sslmode=[^&]*/g, "");
+  return out;
+}
+
 export const pool = new pg.Pool({
-  connectionString: config.databaseUrl || undefined,
+  connectionString: config.databaseUrl ? cleanConnectionString(config.databaseUrl) : undefined,
   host: process.env.PGHOST,
   port: Number(process.env.PGPORT || 5432),
   user: process.env.PGUSER,
@@ -20,7 +67,7 @@ export const pool = new pg.Pool({
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
-  ssl: config.dbSsl ? { rejectUnauthorized: true } : undefined,
+  ssl: buildSslConfig(),
 });
 
 // Asegurar que cada conexión use el esquema dedicado del motor.

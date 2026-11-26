@@ -106,7 +106,9 @@ async function testSelectOne(): Promise<string> {
   try {
     const r = await client.query("SELECT 1 AS v");
     if (r.rows[0]?.v !== 1) throw new Error("SELECT 1 no devolvió el valor esperado");
-    return "Autenticación PostgreSQL + negociación TLS correctas (SELECT 1 OK)";
+    // Reportar si la validación TLS usó CA inyectado o trust store del sistema.
+    const sslCa = config.dbSslCa || config.dbSslCaFile ? "CA inyectado (DB_SSL_CA)" : "trust store del sistema";
+    return `Autenticación PostgreSQL + negociación TLS correctas (SELECT 1 OK · ${sslCa})`;
   } finally {
     client.release();
   }

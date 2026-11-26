@@ -41,15 +41,43 @@ La migración creó el rol `bcch_engine` con una contraseña temporal
 
 ### 2.2 Obtener la cadena de conexión
 
-Cloud PostgreSQL expone conexiones externas vía su **pooler**. La cadena es:
+Cloud PostgreSQL expone conexiones externas vía su **Session Pooler** (IPv4).
+La cadena es:
 
 ```
-postgres://bcch_engine:<contraseña>@db.<project-ref>.supabase.co:5432/postgres
+postgres://bcch_engine:<contraseña>@aws-0-<region>.pooler.supabase.com:5432/postgres
 ```
 
-> Reemplace `<contraseña>` por la que rotó en el paso 2.1 y `<project-ref>` por
-> el identificador de su proyecto Cloud (visible en More → Cloud). El motor
-> forzará TLS (`DB_SSL=true`) para toda conexión externa.
+> Reemplace `<contraseña>` por la que rotó en el paso 2.1 y `<region>` por la
+> región de su proyecto Cloud. El motor forzará TLS (`DB_SSL=true`) para toda
+> conexión externa. **No incluya `?sslmode=require`** en la cadena: el motor lo
+> elimina y aplica su propia configuración TLS centralizada.
+
+### 2.3 Obtener el certificado CA raíz de Cloud (OBLIGATORIO para TLS)
+
+El Session Pooler de Cloud presenta un certificado firmado por una CA que **no
+está en el trust store de Node 22**. Sin el CA raíz, `rejectUnauthorized:true`
+rechaza la conexión con `SELF_SIGNED_CERT_IN_CHAIN`.
+
+**No desactive la validación** (`rejectUnauthorized:false` o
+`NODE_TLS_REJECT_UNAUTHORIZED=0` está prohibido). Inyecte el CA raíz:
+
+En el VPS/hosting (o vía SSH de SiteGround), ejecute:
+
+```bash
+openssl s_client -showcerts -starttls postgres \
+  -connect aws-0-<region>.pooler.supabase.com:5432 </dev/null 2>/dev/null \
+  | awk '/-----BEGIN CERT/,/-----END CERT/' > ca-chain.pem
+```
+
+El archivo `ca-chain.pem` contendrá varios certificados (servidor + CAs
+intermedias + CA raíz). El motor los acepta todos como cadena de confianza.
+Guárdelo en una ruta fuera del repositorio, por ejemplo
+`/home/<usuario>/bcch-engine/ca-chain.pem`.
+
+Luego configure la variable `DB_SSL_CA_FILE` apuntando a esa ruta (sección 3),
+o bien `DB_SSL_CA` con el contenido PEM completo en una sola línea (útil si el
+hosting no permite archivos fuera del repo).
 
 ---
 
@@ -81,9 +109,10 @@ postgres://bcch_engine:<contraseña>@db.<project-ref>.supabase.co:5432/postgres
 | `NODE_ENV` | `production` |
 | `SERVICE_HMAC_SECRET` | `openssl rand -hex 48` (mismo valor que en el Builder) |
 | `CREDENTIAL_ENC_KEY` | `openssl rand -hex 32` |
-| `DATABASE_URL` | `postgres://bcch_engine:<contraseña>@db.<ref>.supabase.co:5432/postgres` |
+| `DATABASE_URL` | `postgres://bcch_engine:<contraseña>@aws-0-<region>.pooler.supabase.com:5432/postgres` |
 | `DB_SCHEMA` | `mail_engine` |
 | `DB_SSL` | `true` |
+| `DB_SSL_CA_FILE` | `/home/<usuario>/bcch-engine/ca-chain.pem` (o use `DB_SSL_CA` con el PEM) |
 | `QUEUE_PROVIDER` | `postgres` |
 | `SYNC_MODE` | `periodic` |
 | `BUILDER_SUPABASE_URL` | URL de Cloud del Builder |
@@ -94,7 +123,9 @@ postgres://bcch_engine:<contraseña>@db.<project-ref>.supabase.co:5432/postgres
 | `CORS_ALLOWED_ORIGIN` | `https://webmail.bcch.solutions` |
 
 > **No** defina `PORT`: SiteGround asigna el puerto dinámicamente. **No** defina
-> `REDIS_URL` (`QUEUE_PROVIDER=postgres` no lo necesita).
+> `REDIS_URL` (`QUEUE_PROVIDER=postgres` no lo necesita). **No** incluya
+> `sslmode=` en `DATABASE_URL`. **No** use `DB_SSL_CA` y `DB_SSL_CA_FILE` a la
+> vez; `DB_SSL_CA` (PEM en línea) tiene prioridad.
 
 ---
 
