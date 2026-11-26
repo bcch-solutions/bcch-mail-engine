@@ -6,6 +6,8 @@
 // ============================================================
 import pg from "pg";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { log } from "./logger.js";
 
@@ -14,29 +16,56 @@ export const DB_SCHEMA = config.dbSchema;
 // --- Configuración TLS centralizada ---
 // El Session Pooler de Cloud presenta un certificado firmado por una CA que
 // no está en el trust store de Node 22. Para mantener rejectUnauthorized:true
-// (validación estricta) inyectamos el CA raíz de Cloud vía DB_SSL_CA (PEM en
-// línea) o DB_SSL_CA_FILE (ruta a archivo .pem/.crt).
+// (validación estricta) inyectamos el CA raíz de Cloud. Orden de resolución:
+//   1. DB_SSL_CA (PEM en línea)
+//   2. DB_SSL_CA_FILE (ruta a archivo .pem/.crt)
+//   3. certs/supabase-root-ca.pem incluido en el repositorio (fallback
+//      automático, independiente del directorio de trabajo)
 function buildSslConfig(): pg.PoolConfig["ssl"] {
   if (!config.dbSsl) return undefined;
 
-  // Recoger el CA: PEM en línea tiene prioridad; si no, leer archivo.
   // Normaliza saltos de línea literales (\n) que algunos paneles (SiteGround)
   // guardan como texto al introducir el PEM en una variable de entorno.
   const normalizePem = (pem: string) =>
     pem.replace(/\\n/g, "\n").replace(/\r/g, "").trim();
+
   let ca: string | undefined;
+  let caSource: string | undefined;
   if (config.dbSslCa) {
     ca = normalizePem(config.dbSslCa);
+    caSource = "DB_SSL_CA";
   } else if (config.dbSslCaFile) {
     try {
       ca = fs.readFileSync(config.dbSslCaFile, "utf8");
+      caSource = `DB_SSL_CA_FILE (${config.dbSslCaFile})`;
       log.info({ file: config.dbSslCaFile }, "DB_SSL_CA_FILE cargado");
     } catch (e: any) {
       log.error({ err: e.message }, "No se pudo leer DB_SSL_CA_FILE");
     }
+  } else {
+    // Fallback: certificado CA raíz oficial de Cloud incluido en el repo.
+    // Resuelto con import.meta.url para que funcione desde dist/ y desde
+    // cualquier directorio de trabajo (SiteGround, Docker, etc.).
+    const bundledCaPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "certs",
+      "supabase-root-ca.pem",
+    );
+    try {
+      ca = fs.readFileSync(bundledCaPath, "utf8");
+      caSource = "certs/supabase-root-ca.pem (incluido en el repo)";
+      log.info({ file: bundledCaPath }, "CA raíz de Cloud cargado desde el repo");
+    } catch (e: any) {
+      log.error(
+        { err: e.message, file: bundledCaPath },
+        "No se pudo leer el CA incluido en el repo; se usará el trust store del sistema",
+      );
+    }
   }
 
   if (ca) {
+    log.info({ source: caSource }, "TLS PostgreSQL: CA inyectado");
     return { rejectUnauthorized: true, ca };
   }
   // Sin CA explícito: confiar en el trust store del sistema (Node 22).
