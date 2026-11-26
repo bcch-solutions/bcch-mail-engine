@@ -84,16 +84,23 @@ export async function requireServiceAuth(req: any, next: any): Promise<void> {
   const sig = req.headers["x-service-signature"];
   const ts = req.headers["x-service-timestamp"];
   const method = req.method;
-  const path = req.path || req.url?.split("?")[0] || "";
+  // Ruta absoluta sin query string (coincide con el cliente del Builder).
+  const path = (req.originalUrl || req.url || "").split("?")[0];
   if (!sig || !ts) {
     throw unauthorized("Missing service signature");
   }
-  const age = Math.abs(Date.now() - Number(ts));
+  const tsNum = Number(ts);
+  if (!Number.isFinite(tsNum)) {
+    throw unauthorized("Invalid timestamp");
+  }
+  const age = Math.abs(Date.now() - tsNum);
   if (age > 2 * 60 * 1000) {
     throw unauthorized("Stale service signature");
   }
   const expected = sign(`${method}|${path}|${ts}`);
-  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
     throw unauthorized("Invalid service signature");
   }
   return next();

@@ -59,24 +59,38 @@ const limiter = rateLimit({
 });
 app.use("/api/", limiter);
 
-// Middleware de autenticación de servicio + contexto de usuario
+// Middleware de autenticación de servicio + contexto de usuario.
+// IMPORTANTE: la firma HMAC se calcula sobre la ruta ABSOLUTA de la petición
+// (incluye el prefijo /api/v1), que es la que el Builder usa al firmar.
+// Express hace que req.path sea relativo al punto de montaje del router,
+// por lo que usamos req.originalUrl (sin query string) para reconstruir la
+// ruta absoluta y que la verificación coincida con el cliente.
 async function serviceAuth(req: Request, res: Response, next: NextFunction) {
   try {
     const sig = req.headers["x-service-signature"] as string;
     const ts = req.headers["x-service-timestamp"] as string;
-    const path = req.path;
     if (!sig || !ts) {
       return res.status(401).json({ error: "Falta firma de servicio" });
     }
-    const age = Math.abs(Date.now() - Number(ts));
+    const tsNum = Number(ts);
+    if (!Number.isFinite(tsNum)) {
+      return res.status(401).json({ error: "Timestamp inválido" });
+    }
+    const age = Math.abs(Date.now() - tsNum);
     if (age > 2 * 60 * 1000) {
       return res.status(401).json({ error: "Firma caducada" });
     }
+    // Ruta absoluta sin query string: req.originalUrl incluye /api/v1/...
+    const path = (req.originalUrl || req.url || "").split("?")[0];
     const expected = crypto
       .createHmac("sha256", config.serviceHmacSecret)
       .update(`${req.method}|${path}|${ts}`)
       .digest("base64url");
-    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+    // timingSafeEqual requiere buffers de igual longitud.
+    const sigBuf = Buffer.from(sig);
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      log.warn({ method: req.method, path, msg: "firma de servicio inválida" }, "auth");
       return res.status(401).json({ error: "Firma inválida" });
     }
     next();
