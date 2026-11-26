@@ -33,6 +33,7 @@ import { storeCredential } from "./credentials.js";
 import { query } from "./db.js";
 import { queueStats } from "./queue.js";
 import { diagnoseHost } from "./diagnostics.js";
+import { runDbHealth, maskUrl } from "./db-health.js";
 import { z } from "zod";
 
 export const app = express();
@@ -472,18 +473,38 @@ v1.get("/attachments/:id", serviceAuth, requireUser, async (req, res) => {
 });
 
 // ---- Diagnóstico ----
+// Diagnóstico general (NO bloqueante). Cada prueba de BD se ejecuta de forma
+// aislada con su propio timeout, para que una prueba fallida (DNS, TCP, auth,
+// tabla inexistente) no cuelgue toda la respuesta. El detalle segmentado y
+// profundo de PostgreSQL está en /diagnostics/db.
 v1.get("/diagnostics", serviceAuth, requireUser, async (_req, res) => {
   const stats = getWorkerStats();
-  const { rows: accounts } = await query("SELECT count(*)::int AS c, count(*) FILTER (WHERE connection_state='connected')::int AS connected FROM engine_accounts");
-  const qStats = await queueStats().catch(() => null);
+  let dbSummary: any = { ok: false, steps: [] };
+  try {
+    dbSummary = await runDbHealth();
+  } catch (e: any) {
+    dbSummary = { ok: false, error: e.message };
+  }
   res.json({
-    engine: { version: "1.0.0", uptime: process.uptime() },
+    engine: { version: "1.0.0", uptime: process.uptime(), node: process.version },
     workers: stats,
     imap: { active: getActiveImapConnections() },
-    accounts: { total: accounts[0]?.c || 0, connected: accounts[0]?.connected || 0 },
-    queues: qStats,
+    db: dbSummary,
     syncMode: config.syncMode,
+    queueProvider: config.queueProvider,
+    databaseUrlMasked: config.databaseUrl ? maskUrl(config.databaseUrl) : "(no configurada)",
+    dbSchema: config.dbSchema,
+    allowedMailDomains: config.allowedMailDomains,
+    ts: new Date().toISOString(),
   });
+});
+
+// Diagnóstico segmentado profundo de la conexión PostgreSQL (Session Pooler).
+// Ejecuta cada prueba de forma aislada: DNS → TCP 5432 → TLS+auth (SELECT 1) →
+// search_path → ensureSchema → engine_accounts → engine_queue → estado del pool.
+v1.get("/diagnostics/db", serviceAuth, requireUser, async (_req, res) => {
+  const dbHealth = await runDbHealth();
+  res.json(dbHealth);
 });
 
 // Diagnóstico de conectividad real: DNS → TCP → TLS por puerto autorizado.
