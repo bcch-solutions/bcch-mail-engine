@@ -20,9 +20,13 @@ function buildSslConfig(): pg.PoolConfig["ssl"] {
   if (!config.dbSsl) return undefined;
 
   // Recoger el CA: PEM en línea tiene prioridad; si no, leer archivo.
+  // Normaliza saltos de línea literales (\n) que algunos paneles (SiteGround)
+  // guardan como texto al introducir el PEM en una variable de entorno.
+  const normalizePem = (pem: string) =>
+    pem.replace(/\\n/g, "\n").replace(/\r/g, "").trim();
   let ca: string | undefined;
   if (config.dbSslCa) {
-    ca = config.dbSslCa;
+    ca = normalizePem(config.dbSslCa);
   } else if (config.dbSslCaFile) {
     try {
       ca = fs.readFileSync(config.dbSslCaFile, "utf8");
