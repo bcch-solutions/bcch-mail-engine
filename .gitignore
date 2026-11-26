@@ -12,6 +12,9 @@ dist/
 *.pfx
 *.crt
 *.cert
+# CA raíz oficial de Cloud (público, huella verificada) — el motor lo carga
+# automáticamente como fallback TLS; debe viajar en el repo.
+!certs/supabase-root-ca.pem
 *.secret
 secrets/
 credentials.json
