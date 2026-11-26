@@ -1,0 +1,31 @@
+# ============================================================
+# BCCH MAIL ENGINE — Caddyfile (TLS automático con Let's Encrypt)
+# Apunta mail-api.bcch.solutions al servicio interno del motor.
+# Requiere que el dominio apunte al VPS (A record) antes de iniciar.
+# ============================================================
+mail-api.bcch.solutions {
+    encode gzip zstd
+    reverse_proxy engine:8443 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+    # Endurecimiento TLS
+    tls {
+        protocols tls1.2 tls1.3
+        curves x25519 secp384r1 secp256r1
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        Server "BCCH-MAIL-ENGINE"
+    }
+    # Limitar métodos aceptados
+    @notallowed not method GET POST PATCH DELETE OPTIONS
+    respond @notallowed 405
+    log {
+        output file /data/access.log
+        format json
+    }
+}

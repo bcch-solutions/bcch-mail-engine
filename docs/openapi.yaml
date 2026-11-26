@@ -1,0 +1,494 @@
+openapi: 3.0.3
+info:
+  title: BCCH MAIL ENGINE API
+  version: 1.0.0
+  description: |
+    API REST privada del motor de correo BCCH MAIL ENGINE.
+    Autenticación de doble capa:
+    1. Firma HMAC de servicio (cabeceras X-Service-Signature / X-Service-Timestamp)
+    2. Token de contexto de usuario (cabecera X-User-Token) emitido por la app principal.
+    La credencial de servicio por sí sola NO otorga acceso a buzones; cada operación
+    valida la asignación explícita de la cuenta al usuario.
+servers:
+  - url: https://mail-api.bcch.solutions
+    description: Producción (VPS + Caddy TLS)
+  - url: http://localhost:8443
+    description: Desarrollo local
+
+components:
+  securitySchemes:
+    ServiceHmac:
+      type: apiKey
+      in: header
+      name: X-Service-Signature
+      description: HMAC-SHA256 de "METHOD|path|timestamp" con SERVICE_HMAC_SECRET (base64url)
+    ServiceTimestamp:
+      type: apiKey
+      in: header
+      name: X-Service-Timestamp
+    UserToken:
+      type: apiKey
+      in: header
+      name: X-User-Token
+      description: Token de contexto de usuario de corta duración (5 min) emitido por /auth/issue-token
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+        timestamp:
+          type: string
+    Status:
+      type: object
+      properties:
+        engine:
+          type: object
+        workers:
+          type: object
+        imapConnections:
+          type: integer
+        dbOk:
+          type: boolean
+    AccountStatus:
+      type: object
+      properties:
+        builder_account_id:
+          type: string
+        connection_state:
+          type: string
+          enum: [connected, disconnected, error]
+        last_sync_at:
+          type: string
+          nullable: true
+        last_error:
+          type: string
+          nullable: true
+    SendMessage:
+      type: object
+      required: [account_id, from, to, subject]
+      properties:
+        account_id:
+          type: string
+        from:
+          type: string
+          format: email
+        to:
+          type: array
+          items:
+            type: string
+            format: email
+        cc:
+          type: array
+          items:
+            type: string
+            format: email
+        bcc:
+          type: array
+          items:
+            type: string
+            format: email
+        subject:
+          type: string
+        text:
+          type: string
+        html:
+          type: string
+        attachments:
+          type: array
+          items:
+            type: object
+        scheduledSendAt:
+          type: string
+          description: ISO 8601 — encola como envío programado
+    MessageList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+        total:
+          type: integer
+
+security:
+  - ServiceHmac: []
+    ServiceTimestamp: []
+    UserToken: []
+
+paths:
+  /api/v1/health:
+    get:
+      summary: Estado de salud (sin autenticación)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /api/v1/version:
+    get:
+      summary: Versión del motor
+      responses:
+        "200":
+          description: OK
+  /api/v1/status:
+    get:
+      summary: Estado global (workers, conexiones, DB)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /api/v1/auth/issue-token:
+    post:
+      summary: Emite token de contexto de usuario (solo servicio autenticado)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, email, role]
+              properties:
+                userId:
+                  type: string
+                email:
+                  type: string
+                role:
+                  type: string
+                  enum: [superadmin, domain_admin, user]
+                domainId:
+                  type: string
+                companyId:
+                  type: string
+                accountId:
+                  type: string
+      responses:
+        "200":
+          description: Token emitido
+        "400":
+          description: Payload inválido
+  /api/v1/accounts:
+    post:
+      summary: Registra una cuenta en el motor (con credencial cifrada)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_id]
+              properties:
+                account_id:
+                  type: string
+                credential_secret:
+                  type: string
+                  description: Contraseña de aplicación (se cifra AES-256-GCM en el motor)
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Sin permisos
+  /api/v1/accounts/test:
+    post:
+      summary: Prueba IMAP y SMTP de una cuenta
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_id]
+              properties:
+                account_id:
+                  type: string
+      responses:
+        "200":
+          description: Resultado real de conexión (sin simulación)
+  /api/v1/accounts/connect:
+    post:
+      summary: Conecta la cuenta (IMAP + IDLE)
+      responses:
+        "200":
+          description: OK
+  /api/v1/accounts/disconnect:
+    post:
+      summary: Desconecta la cuenta
+      responses:
+        "200":
+          description: OK
+  /api/v1/accounts/{id}/status:
+    get:
+      summary: Estado de la cuenta
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountStatus"
+        "404":
+          description: Cuenta no registrada
+  /api/v1/accounts/{id}/sync:
+    post:
+      summary: Sincroniza la cuenta (importación inicial o incremental)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                days:
+                  type: integer
+                  description: Período de sincronización (30 por defecto)
+      responses:
+        "200":
+          description: OK
+  /api/v1/accounts/{id}/sync-status:
+    get:
+      summary: Estado de sincronización
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /api/v1/accounts/{id}/messages:
+    get:
+      summary: Lista mensajes (paginado, filtrable)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: folder
+          schema:
+            type: string
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+        - in: query
+          name: search
+          schema:
+            type: string
+        - in: query
+          name: unread
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageList"
+  /api/v1/messages/{id}:
+    get:
+      summary: Obtiene un mensaje (carga perezosa del cuerpo desde IMAP)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: No encontrado
+  /api/v1/messages/send:
+    post:
+      summary: Encola un envío (idempotente)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessage"
+      responses:
+        "200":
+          description: Encolado
+  /api/v1/messages/{id}/reply:
+    post:
+      summary: Responde un mensaje
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /api/v1/messages/{id}/forward:
+    post:
+      summary: Reenvía un mensaje
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /api/v1/messages/{id}/flags:
+    patch:
+      summary: Actualiza flags (leído, destacado, importante)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                read:
+                  type: boolean
+                flagged:
+                  type: boolean
+                important:
+                  type: boolean
+      responses:
+        "200":
+          description: OK
+  /api/v1/messages/{id}/move:
+    post:
+      summary: Mueve un mensaje a otra carpeta
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destFolder]
+              properties:
+                destFolder:
+                  type: string
+      responses:
+        "200":
+          description: OK
+  /api/v1/messages/{id}:
+    delete:
+      summary: Elimina un mensaje (papelera IMAP)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /api/v1/accounts/{id}/folders:
+    get:
+      summary: Lista carpetas IMAP
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+    post:
+      summary: Crea una carpeta
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+      responses:
+        "200":
+          description: OK
+  /api/v1/folders/{id}:
+    patch:
+      summary: Renombra una carpeta
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Elimina una carpeta
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /api/v1/attachments/{id}:
+    get:
+      summary: Descarga un adjunto bajo demanda
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Contenido del adjunto
+  /api/v1/diagnostics:
+    get:
+      summary: Diagnóstico completo del motor
+      responses:
+        "200":
+          description: OK

@@ -1,0 +1,77 @@
+# ============================================================
+# BCCH MAIL ENGINE — Docker Compose
+# Despliegue en VPS Ubuntu 24.04 LTS
+# ============================================================
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bcch_engine
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-replace-strong-password}
+      POSTGRES_DB: bcch_mail_engine
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bcch_engine -d bcch_mail_engine"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  engine:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: bcch_engine
+      PGPASSWORD: ${PG_PASSWORD:-replace-strong-password}
+      PGDATABASE: bcch_mail_engine
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - ./logs:/engine/logs
+      - enginetmp:/tmp/bcch-engine
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - engine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+
+volumes:
+  pgdata:
+  redisdata:
+  enginetmp:
+  caddydata:
+  caddyconfig:

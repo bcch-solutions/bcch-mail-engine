@@ -1,0 +1,26 @@
+# Dependencias y artefactos
+node_modules/
+dist/
+
+# Secretos y credenciales — NUNCA commitear
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cert
+*.secret
+secrets/
+credentials.json
+service-account.json
+
+# Logs y temporales
+*.log
+logs/
+tmp/
+
+# Paquetes de entrega
+bcch-mail-engine-release.zip
